@@ -1,0 +1,91 @@
+name: Release Checker
+description: Validates release Pull Requests and generates release metadata from Pull Request information.
+
+inputs:
+  pr-title:
+    description: Pull Request title used to validate the release format and extract the release version.
+    required: true
+
+  pr-labels:
+    description: Pull Request labels in JSON format used to validate the required release label.
+    required: true
+
+outputs:
+  version:
+    description: Release version extracted from the Pull Request title.
+    value: ${{ steps.extract-release-metadata.outputs.version }}
+
+  release-title:
+    description: Release title generated from the Pull Request title.
+    value: ${{ steps.extract-release-metadata.outputs.release-title }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate required release label
+      shell: bash
+      env:
+        PR_LABELS: ${{ inputs.pr-labels }}
+        REQUIRED_LABEL: demo-to-prod
+      run: |
+        echo "Labels received: $PR_LABELS"
+
+        if [[ "$PR_LABELS" != *"$REQUIRED_LABEL"* ]]; then
+          echo ""
+          echo "ERROR: The required label '$REQUIRED_LABEL' is missing from this Pull Request."
+          echo "Please add the required label and try again."
+          echo ""
+          exit 1
+        fi
+
+        echo "Required label '$REQUIRED_LABEL' found."
+
+    - name: Validate Pull Request title format
+      shell: bash
+      env:
+        PR_TITLE: ${{ inputs.pr-title }}
+      run: |
+        echo "Title received: $PR_TITLE"
+
+        if [[ ! "$PR_TITLE" =~ ^Release\ v[0-9]+\.[0-9]+\.[0-9]+\ -\ .+$ ]]; then
+          echo ""
+          echo "ERROR: The Pull Request title does not follow the required release format."
+          echo ""
+          echo "Expected format:"
+          echo "  Release vX.X.X - Feature Description"
+          echo ""
+          echo "Received title:"
+          echo "  $PR_TITLE"
+          echo ""
+          echo "Valid examples:"
+          echo "  Release v1.0.0 - Initial Production Release"
+          echo "  Release v1.2.0 - Add Payment Integration"
+          echo "  Release v2.0.1 - Fix Authentication Timeout"
+          echo ""
+          exit 1
+        fi
+
+        echo "Pull Request title format is valid."
+
+    - name: Extract release metadata
+      id: extract-release-metadata
+      shell: bash
+      env:
+        PR_TITLE: ${{ inputs.pr-title }}
+      run: |
+        VERSION=$(echo "$PR_TITLE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+
+        if [[ -z "$VERSION" ]]; then
+          echo ""
+          echo "ERROR: Unable to extract release version from Pull Request title."
+          echo "Received title: $PR_TITLE"
+          echo ""
+          exit 1
+        fi
+
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "release-title=$PR_TITLE" >> "$GITHUB_OUTPUT"
+
+        echo "Release metadata generated successfully."
+        echo "Version: $VERSION"
+        echo "Release title: $PR_TITLE"
