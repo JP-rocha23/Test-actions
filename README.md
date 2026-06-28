@@ -1,3 +1,3 @@
 # Test Actions
 
-Goal: Test my actions and pipelines.
+Testing release-checker and tag generator actions.
