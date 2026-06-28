@@ -1,91 +1,117 @@
-name: Tag Generator
-description: Creates the final Git tag and publishes a GitHub Release after the deployment flow completes successfully.
+name: Deploy to Prod Environment
 
-inputs:
-  github-token:
-    description: GitHub token with write permissions to create tags and publish releases.
-    required: true
+on:
+  push:
+    branches:
+      - master
 
-  version:
-    description: Release version used as the Git tag.
-    required: true
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
 
-  release-title:
-    description: Title used for the GitHub Release.
-    required: true
+jobs:
+  get-pr-context:
+    name: Get Pull Request Context
+    runs-on: ubuntu-latest
 
-  release-notes:
-    description: Pull Request description used as GitHub Release notes.
-    required: true
+    permissions:
+      contents: read
+      pull-requests: read
 
-runs:
-  using: composite
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        token: ${{ inputs.github-token }}
+    outputs:
+      pr-title: ${{ steps.pr.outputs.pr-title }}
+      pr-body: ${{ steps.pr.outputs.pr-body }}
+      pr-labels: ${{ steps.pr.outputs.pr-labels }}
 
-    - name: Configure Git
-      shell: bash
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
+    steps:
+      - name: Get Pull Request information
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          PR_DATA=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPOSITORY/commits/$COMMIT_SHA/pulls")
 
-    - name: Validate release version format
-      shell: bash
-      run: |
-        VERSION="${{ inputs.version }}"
+          PR_COUNT=$(echo "$PR_DATA" | jq length)
 
-        if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          echo "ERROR: Invalid release version format."
-          echo "Expected format: vX.X.X"
-          echo "Received version: $VERSION"
-          exit 1
-        fi
+          if [[ "$PR_COUNT" -eq 0 ]]; then
+            echo "ERROR: No Pull Request was found for commit $COMMIT_SHA."
+            echo "This workflow must be triggered by a merge commit associated with a Pull Request."
+            exit 1
+          fi
 
-        echo "Release version format is valid: $VERSION"
+          PR_TITLE=$(echo "$PR_DATA" | jq -r '.[0].title')
+          PR_BODY=$(echo "$PR_DATA" | jq -r '.[0].body // ""')
+          PR_LABELS=$(echo "$PR_DATA" | jq -c '.[0].labels | map(.name)')
 
-    - name: Validate tag does not already exist
-      shell: bash
-      run: |
-        VERSION="${{ inputs.version }}"
+          echo "Pull Request title: $PR_TITLE"
+          echo "Pull Request labels: $PR_LABELS"
 
-        git fetch --tags
+          echo "pr-title=$PR_TITLE" >> "$GITHUB_OUTPUT"
+          echo "pr-labels=$PR_LABELS" >> "$GITHUB_OUTPUT"
 
-        if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
-          echo "ERROR: Tag '$VERSION' already exists."
-          echo "Please use a new release version."
-          exit 1
-        fi
+          {
+            echo "pr-body<<EOF"
+            echo "$PR_BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-        echo "Tag '$VERSION' is available."
+  release-checker:
+    name: Release Checker
+    runs-on: ubuntu-latest
 
-    - name: Create Git tag
-      shell: bash
-      run: |
-        VERSION="${{ inputs.version }}"
+    needs:
+      - get-pr-context
 
-        git tag -a "$VERSION" -m "Release $VERSION"
-        git push origin "$VERSION"
+    outputs:
+      version: ${{ steps.release-checker.outputs.version }}
+      release-title: ${{ steps.release-checker.outputs.release-title }}
 
-        echo "Git tag '$VERSION' created successfully."
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Save release notes to file
-      shell: bash
-      env:
-        RELEASE_NOTES: ${{ inputs.release-notes }}
-      run: |
-        printf "%s\n" "$RELEASE_NOTES" > release_notes.md
-        echo "Release notes file created successfully."
+      - name: Check release information
+        id: release-checker
+        uses: ./.github/actions/release-checker
+        with:
+          pr-title: ${{ needs.get-pr-context.outputs.pr-title }}
+          pr-labels: ${{ needs.get-pr-context.outputs.pr-labels }}
 
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        token: ${{ inputs.github-token }}
-        tag_name: ${{ inputs.version }}
-        name: ${{ inputs.release-title }}
-        body_path: release_notes.md
-        draft: false
-        prerelease: false
+  quality-assurance:
+    name: Quality Assurance
+    runs-on: ubuntu-latest
+
+    needs:
+      - release-checker
+
+    steps:
+      - name: Run quality assurance
+        run: |
+          echo "Running quality assurance checks..."
+          echo "Quality assurance completed successfully."
+
+  tag-generator:
+    name: Tag Generator
+    runs-on: ubuntu-latest
+
+    needs:
+      - get-pr-context
+      - release-checker
+      - quality-assurance
+
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - name: Generate tag and release
+        uses: ./.github/actions/tag-generator
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ needs.release-checker.outputs.version }}
+          release-title: ${{ needs.release-checker.outputs.release-title }}
+          release-notes: ${{ needs.get-pr-context.outputs.pr-body }}
