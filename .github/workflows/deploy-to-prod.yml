@@ -17,6 +17,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read
 
     outputs:
       pr-title: ${{ steps.pr.outputs.pr-title }}
@@ -31,21 +32,36 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          PR_DATA=$(gh api \
+          COMMIT_DATA=$(gh api \
             -H "Accept: application/vnd.github+json" \
-            "/repos/$REPOSITORY/commits/$COMMIT_SHA/pulls")
+            "/repos/$REPOSITORY/commits/$COMMIT_SHA")
 
-          PR_COUNT=$(echo "$PR_DATA" | jq length)
+          COMMIT_MESSAGE=$(echo "$COMMIT_DATA" | jq -r '.commit.message')
 
-          if [[ "$PR_COUNT" -eq 0 ]]; then
-            echo "ERROR: No Pull Request was found for commit $COMMIT_SHA."
-            echo "This workflow must be triggered by a merge commit associated with a Pull Request."
+          echo "Commit message:"
+          echo "$COMMIT_MESSAGE"
+
+          PR_NUMBER=$(echo "$COMMIT_MESSAGE" | grep -oE 'Merge pull request #[0-9]+' | grep -oE '[0-9]+' | head -n 1)
+
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "ERROR: Unable to extract Pull Request number from merge commit message."
+            echo "This workflow must be triggered by a Pull Request merge commit."
             exit 1
           fi
 
-          PR_TITLE=$(echo "$PR_DATA" | jq -r '.[0].title')
-          PR_BODY=$(echo "$PR_DATA" | jq -r '.[0].body // ""')
-          PR_LABELS=$(echo "$PR_DATA" | jq -c '.[0].labels | map(.name)')
+          echo "Pull Request number found: $PR_NUMBER"
+
+          PR_DATA=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPOSITORY/pulls/$PR_NUMBER")
+
+          ISSUE_DATA=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPOSITORY/issues/$PR_NUMBER")
+
+          PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
+          PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+          PR_LABELS=$(echo "$ISSUE_DATA" | jq -c '.labels | map(.name)')
 
           echo "Pull Request title: $PR_TITLE"
           echo "Pull Request labels: $PR_LABELS"
@@ -106,6 +122,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      issues: read
 
     steps:
       - name: Generate tag and release
